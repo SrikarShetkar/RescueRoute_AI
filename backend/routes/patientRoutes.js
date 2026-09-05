@@ -13,6 +13,10 @@ router.get("/vehicle/:vehicleNumber", ctrl.lookupByVehicle);
 // GET /api/patient/aadhaar/:identifier — lookup by Aadhaar number
 router.get("/aadhaar/:identifier", ctrl.lookupByAadhaar);
 
+// GET /api/patient/lookup/:patientId — resolve a patient reference
+// (RESCUEROUTE:PATIENT:<publicId>) to an emergency-relevant subset
+router.get("/lookup/:patientId", ctrl.lookupByPatientId);
+
 // GET /api/patient/emergency-profile/:userId — get full emergency profile
 router.get("/emergency-profile/:userId", ctrl.getEmergencyProfile);
 

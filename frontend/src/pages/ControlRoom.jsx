@@ -7,6 +7,7 @@ import { useAuth } from "../context/AuthContext";
 import StatusBadge from "../components/StatusBadge";
 import DataLabel from "../components/DataLabel";
 import Icon from "../components/Icon";
+import AIDecisionPanel from "../components/AIDecisionPanel";
 import { EscalationBanner } from "../components/AlertBanner";
 import { formatClock, timeAgo } from "../utils/time";
 
@@ -26,6 +27,7 @@ export default function ControlRoom() {
   const [selected, setSelected] = useState(null);
   const [overrideBusy, setOverrideBusy] = useState(null);
   const [demoBusy, setDemoBusy] = useState(false);
+  const [reevalBusy, setReevalBusy] = useState(false);
   const [error, setError] = useState(null);
 
   useEffect(() => {
@@ -68,12 +70,54 @@ export default function ControlRoom() {
       setFeed((f) => [{ detail: `HOSPITAL REJECTED — ${data.hospitalId} (${data.reasonLabel || "operational reason"})`, emergencyId: data.emergencyId, at: new Date().toISOString() }, ...f].slice(0, 30));
     });
 
+    // AI decision trail streaming (triage / recommendation / re-evaluation).
+    const aiKey = socketService.on(EVENTS.AI_DECISION, (data) => {
+      const entry = data?.entry;
+      if (!entry) return;
+      const kind = entry.status === "FALLBACK" ? "DETERMINISTIC" : "AI";
+      const label = ({ "ai:triage": "TRIAGE", "ai:recommendation": "RECOMMEND", "ai:reevaluation": "RE-EVAL" }[entry.event] || "AI DECISION");
+      setFeed((f) => [{
+        detail: `${label} [${kind}] — ${entry.reason || "—"}${entry.confidencePct != null ? ` (conf ${entry.confidencePct}%)` : ""}`,
+        emergencyId: data.emergencyId,
+        at: entry.at || new Date().toISOString(),
+      }, ...f].slice(0, 30));
+    });
+
+    // Bystander patient identification + QR failure live stream.
+    const identKey = socketService.on(EVENTS.PATIENT_IDENTIFIED, (data) => {
+      setFeed((f) => [{
+        detail: `PATIENT IDENTIFIED — ${data.patient?.name || "Unknown"} via ${data.patient?.identificationMethod || "UNKNOWN"}${data.patient?.verified ? " (verified)" : " (unverified)"}`,
+        emergencyId: data.emergencyId,
+        at: data.at || new Date().toISOString(),
+      }, ...f].slice(0, 30));
+    });
+    const qrFailKey = socketService.on(EVENTS.PATIENT_VERIFICATION_FAILED, (data) => {
+      setFeed((f) => [{
+        detail: `QR FAILED — ${data.message || data.reason || "token did not resolve"} (${data.token || "unknown token"})`,
+        emergencyId: data.emergencyId,
+        at: data.at || new Date().toISOString(),
+      }, ...f].slice(0, 30));
+    });
+
+    // Adaptive dispatch: control-room approved reassignment went live.
+    const reassignKey = socketService.on(EVENTS.DISPATCH_REASSIGNED, (data) => {
+      setFeed((f) => [{
+        detail: `ADAPTIVE DISPATCH — approval applied, case reassigned to ${data.ambulanceId || "another unit"}`,
+        emergencyId: data.emergencyId,
+        at: new Date().toISOString(),
+      }, ...f].slice(0, 30));
+    });
+
     return () => {
       clearInterval(poll);
       socketService.off(EVENTS.EMERGENCY_UPDATE, key);
       socketService.off(EVENTS.ESCALATION_TRIGGERED, escKey);
       socketService.off(EVENTS.CORRIDOR_UPDATED, corrKey);
       socketService.off(EVENTS.HOSPITAL_REJECTED, rejKey);
+      socketService.off(EVENTS.AI_DECISION, aiKey);
+      socketService.off(EVENTS.PATIENT_IDENTIFIED, identKey);
+      socketService.off(EVENTS.PATIENT_VERIFICATION_FAILED, qrFailKey);
+      socketService.off(EVENTS.DISPATCH_REASSIGNED, reassignKey);
       setUiRole("home");
     };
   }, []);
@@ -117,14 +161,17 @@ export default function ControlRoom() {
   const runDemo = async (which) => {
     setDemoBusy(true);
     setError(null);
+    const refresh = () => {
+      api.statusOverview().then(setStats).catch(() => {});
+      api.metrics().then(setMetrics).catch(() => {});
+      api.listEmergencies().then(({ emergencies }) => setEmergencies(emergencies)).catch((e) => setError(e.message));
+    };
     try {
       if (which === "full") await api.runFullScenario();
-      else await api.runCrashScenario();
-      const refresh = () => {
-        api.statusOverview().then(setStats).catch(() => {});
-        api.metrics().then(setMetrics).catch(() => {});
-        api.listEmergencies().then(({ emergencies }) => setEmergencies(emergencies)).catch((e) => setError(e.message));
-      };
+      else if (which === "crash") await api.runCrashScenario();
+      else if (which === "adaptive") await api.runAdaptiveDispatchScenario();
+      else if (which === "qr-fail") await api.runUnknownQrScenario();
+      else if (which === "shortage") await api.runAmbulanceShortageScenario();
       refresh();
       setTimeout(refresh, 1500);
       setTimeout(refresh, 4000);
@@ -132,6 +179,28 @@ export default function ControlRoom() {
       setError(err.message);
     } finally {
       setDemoBusy(false);
+    }
+  };
+
+  const runReevaluation = async () => {
+    if (!selected) return;
+    setReevalBusy(true);
+    setError(null);
+    try {
+      const res = await api.reevaluateEmergency(selected.emergencyId, { requestedBy: "control-room" });
+      const kind = res.entry?.status === "FALLBACK" ? "DETERMINISTIC" : "AI";
+      setFeed((f) => [{
+        detail: `RE-EVAL [${kind}] — ${res.entry?.reason || res.decision?.recommendedAction || "done"} (Δ ${res.etaDelta} min)`,
+        emergencyId: selected.emergencyId,
+        at: new Date().toISOString(),
+      }, ...f].slice(0, 30));
+      const updated = await api.getEmergency(selected.emergencyId);
+      setSelected(updated.emergency);
+      api.listEmergencies().then(({ emergencies }) => setEmergencies(emergencies)).catch(() => {});
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setReevalBusy(false);
     }
   };
 
@@ -149,6 +218,15 @@ export default function ControlRoom() {
             </button>
             <button className="btn btn-amber" onClick={() => runDemo("crash")} disabled={demoBusy}>
               <Icon name="crash" size={15} /> Crash scenario
+            </button>
+            <button className="btn btn-green" onClick={() => runDemo("adaptive")} disabled={demoBusy}>
+              {demoBusy ? <><span className="spin" /> Running…</> : <><Icon name="robot" size={15} /> AI re-plan</>}
+            </button>
+            <button className="btn btn-ghost" onClick={() => runDemo("qr-fail")} disabled={demoBusy}>
+              <Icon name="camera" size={15} /> QR fail
+            </button>
+            <button className="btn btn-ghost" onClick={() => runDemo("shortage")} disabled={demoBusy}>
+              <Icon name="alert" size={15} /> Shortage
             </button>
             <button className="btn btn-ghost" onClick={() => api.resetDemo().then(() => { setEmergencies([]); setFeed([]); setStats(null); setMetrics(null); api.statusOverview().then(setStats); api.metrics().then(setMetrics); })}>
               <Icon name="refresh" size={15} /> Reset demo
@@ -280,6 +358,14 @@ export default function ControlRoom() {
 
                 <p><strong>{selected.patient.name}</strong> · {selected.patient.age || "?"} · {selected.patient.bloodGroup}</p>
                 <p className="muted">{selected.patient.condition}</p>
+                {selected.patient?.identificationMethod && selected.patient.identificationMethod !== "UNKNOWN" && (
+                  <div className="cr-identified">
+                    <Icon name="check" size={13} />
+                    <span>Patient identified via {selected.patient.identificationMethod}</span>
+                    {selected.patient.patientId && <span className="mono muted">{selected.patient.patientId}</span>}
+                    <DataLabel kind="simulated">{selected.patient.verified ? "VERIFIED" : "UNVERIFIED"}</DataLabel>
+                  </div>
+                )}
                 <div className="cr-detail-assign">
                   <div><span className="rr-label">Ambulance</span><span>{selected.ambulance?.name || "—"}</span></div>
                   <div><span className="rr-label">Hospital</span><span>{selected.hospital?.name || "—"}</span></div>
@@ -311,6 +397,12 @@ export default function ControlRoom() {
                   <div className="cr-flag-summary">
                     <Icon name="alert" size={13} /> Risk {selected.riskScore ?? 0} — {(selected.reportFlags || []).join(", ")}
                   </div>
+                )}
+                <AIDecisionPanel emergency={selected} />
+                {!["COMPLETED", "CANCELLED"].includes(selected.status) && (
+                  <button className="btn btn-blue cr-reeval" onClick={runReevaluation} disabled={reevalBusy}>
+                    {reevalBusy ? <><span className="spin" /> Re-evaluating…</> : <><Icon name="robot" size={14} /> Run AI re-evaluation</>}
+                  </button>
                 )}
                 {!["COMPLETED", "CANCELLED"].includes(selected.status) && (
                   <button className="btn btn-red cr-false-alarm" onClick={() => markFalseAlarm(selected)}>

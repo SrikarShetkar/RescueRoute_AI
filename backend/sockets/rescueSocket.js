@@ -177,6 +177,22 @@ function initSocket(server) {
     io.emit("hospital:resources", payload);
   });
 
+  /* ---------------- AI + patient-identification streams ---------------- */
+
+  // Forward an event to everyone AND to the emergency room it belongs to.
+  const forwardToEmergency = (event) => (payload) => {
+    io.emit(event, payload);
+    if (payload?.emergencyId) io.to(payload.emergencyId).emit(event, payload);
+  };
+
+  bus.on("patient:identified", forwardToEmergency("patient:identified"));
+  bus.on("patient:verification-failed", forwardToEmergency("patient:verification-failed"));
+  bus.on("ai:triage", forwardToEmergency("ai:triage"));
+  bus.on("ai:recommendation", forwardToEmergency("ai:recommendation"));
+  bus.on("ai:reevaluation", forwardToEmergency("ai:reevaluation"));
+  bus.on("ai:decision", forwardToEmergency("ai:decision"));
+  bus.on("dispatch:reassigned", forwardToEmergency("dispatch:reassigned"));
+
   return io;
 }
 

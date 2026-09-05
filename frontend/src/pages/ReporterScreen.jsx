@@ -442,9 +442,19 @@ function DetailsStep({ who, identifiedPatient, onBack, onSubmit, submitting, err
         bloodGroup: identifiedPatient.bloodGroup || "",
         allergies: identifiedPatient.allergies || "None",
         condition: "",
+        identificationMethod: identifiedPatient.identificationMethod || "UNKNOWN",
+        patientId: identifiedPatient.patientId || null,
       };
     }
-    return { name: "", age: "", bloodGroup: "", allergies: "None", condition: "" };
+    return {
+      name: "",
+      age: "",
+      bloodGroup: "",
+      allergies: "None",
+      condition: "",
+      identificationMethod: who === "self" ? "UNKNOWN" : "MANUAL",
+      patientId: null,
+    };
   });
   const [reporter, setReporter] = useState({ name: "" });
   const [severity, setSeverity] = useState("moderate");
@@ -466,7 +476,10 @@ function DetailsStep({ who, identifiedPatient, onBack, onSubmit, submitting, err
       {identifiedPatient && (
         <div className="rr-identified-badge">
           <span className="rr-identified-icon">✓</span>
-          <span>Patient identified via RescueRoute lookup</span>
+          <span>
+            Patient identified via RescueRoute lookup
+            {identifiedPatient.identificationMethod ? ` (${identifiedPatient.identificationMethod})` : ""}
+          </span>
           <DataLabel kind="simulated">AUTO-FILLED</DataLabel>
         </div>
       )}

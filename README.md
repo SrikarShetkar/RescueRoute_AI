@@ -7,6 +7,12 @@ operation with smart hospital recommendation, parallel admission requests with
 first-accept-wins, a green corridor for approaching ambulances, fake-case mitigation,
 and real-time (Socket.IO) sync across every role.
 
+It also layers an **AI Emergency Orchestrator** on top of the deterministic engine:
+advisory triage, ambulance/hospital recommendations and adaptive re-evaluation
+(Gemini or an audited deterministic fallback), plus **bystander patient identification**
+that resolves a non-sensitive patient-reference QR to the response team's working view
+of the victim.
+
 The **backend is the single source of truth** — each role's screen reflects server state,
 and the server validates every state transition (role-gated, ownership-checked). The whole
 engine runs **fully in-memory**, so the demo works with no database at all (MongoDB is
@@ -21,15 +27,16 @@ optional and auto-detected).
 3. [Emergency Lifecycle (State Machine)](#emergency-lifecycle-state-machine)
 4. [How the Algorithms Work](#how-the-algorithms-work)
 5. [Fake-Case (False Alarm) Mitigation](#fake-case-false-alarm-mitigation)
-6. [Tech Stack](#tech-stack)
-7. [Project Structure](#project-structure)
-8. [Backend API Reference](#backend-api-reference)
-9. [Installation & Running](#installation--running)
-10. [Demo Accounts](#demo-accounts)
-11. [Testing](#testing)
-12. [Configuration](#configuration)
-13. [Data Labels & Demo Clarity](#data-labels--demo-clarity)
-14. [Known Limitations](#known-limitations)
+6. [AI Emergency Orchestrator & Patient Identification](#ai-emergency-orchestrator--patient-identification)
+7. [Tech Stack](#tech-stack)
+8. [Project Structure](#project-structure)
+9. [Backend API Reference](#backend-api-reference)
+10. [Installation & Running](#installation--running)
+11. [Demo Accounts](#demo-accounts)
+12. [Testing](#testing)
+13. [Configuration](#configuration)
+14. [Data Labels & Demo Clarity](#data-labels--demo-clarity)
+15. [Known Limitations](#known-limitations)
 
 ---
 
@@ -55,6 +62,15 @@ optional and auto-detected).
 - **Fake-case mitigation** — manual-report confirmation, per-device rate limiting, an advisory
   risk score and suspicious-case flags surfaced in the control room.
 - **First-login guided demo** — a two-minute walkthrough on the first login.
+- **AI Emergency Orchestrator** — advisory triage, ambulance/hospital recommendation and
+  adaptive re-evaluation. Gemini when a key is present, else an audited, deterministic
+  fallback (`FALLBACK`-labelled). The AI stays advisory: the engine, not the model, executes.
+- **On-device QR patient identification** — bystander camera scan or image upload decoding
+  (`html5-qrcode`) plus manual entry; a non-sensitive `patientId` reference is resolved
+  server-side and attached to the emergency (`patient:identified`).
+- **Adaptive dispatch demo** — traffic degrades the assigned unit's ETA, the AI re-evaluation
+  flags `REASSIGN_AMBULANCE` (requires human approval), and the control room approves →
+  deterministic reassignment — all streamed live.
 - **Live metrics & control-room clarity** — every figure is labelled `SIMULATED`, `LIVE` or
   `DEMO` so the demo never misleads.
 
@@ -200,18 +216,70 @@ See the dedicated section below.
 
 ---
 
+## AI Emergency Orchestrator & Patient Identification
+
+### AI decision support (`backend/domain/ai/`)
+
+Every emergency report triggers an **advisory pipeline** (fire-and-forget, never blocks the
+report): triage → ambulance recommendation. A control-room operator can also trigger an
+**adaptive re-evaluation** (`POST /emergencies/:id/reevaluate`) that detects plan degradation
+(ETA jump, ambulance/hospital resource loss) and recommends `REASSIGN_AMBULANCE` when a
+better unit is available — flagged `requiresHumanApproval: true`.
+
+- **Safety contract**: `AI → structured output → schema validation → deterministic eligibility
+  checks → role authorization → engine action`. The AI never calls engine actions; the engine
+  remains the source of truth and re-checks every real-world rule.
+- **Two sources, honest labels**: Gemini when `GEMINI_API_KEY` is set (`GENERATED`), otherwise
+  the deterministic fallback (`FALLBACK`). Everything degrades gracefully.
+- **Audit trail**: every decision lands in the emergency's append-only `aiDecisionLog`
+  (`AI-###` ids, confidence %, status, why/reasoning) and streams to dashboards as
+  `ai:triage`, `ai:recommendation`, `ai:reevaluation`, `ai:decision` + `dispatch:reassigned`.
+- **Control room**: the `AIDecisionPanel` renders the live trail; the operator can run a
+  re-evaluation and can approve a reassignment (`reassign-ambulance`, dispatch role) which
+  the deterministic engine executes against its own fleet rules.
+
+### Bystander patient identification (optional, reference-only)
+
+A bystander can identify the victim by scanning a **patient-reference QR** (camera), by
+uploading a QR image (decoded **on-device**, never uploaded past the token), or by manually
+entering the reference. `GET /api/patient/lookup/:patientId` resolves it server-side to a
+bounded, emergency-safe profile — **no Aadhaar, no phone, no medical history**.
+
+- The QR payload carries only `RESCUEROUTE:PATIENT:<publicId>` (deterministic per user, e.g.
+  `PT-B7D6D7`); tampered/unknown tokens return `PATIENT_NOT_FOUND` / `INVALID_PATIENT_REFERENCE`
+  and surface as `patient:verification-failed`.
+- Attach via `POST /emergencies/:id/patient` → stored as `{ patientId, identificationMethod:
+  QR|MANUAL|VEHICLE|AADHAAR_REFERENCE|UNKNOWN, verified, verifiedAt }` → `patient:identified`.
+- Demo patient references: `PT-B7D6D7` (Rajesh Kumar), `PT-B7D6D8` (Rahul Kumar), `PT-B7D6D9`
+  (Lakshmi Kumar), `PT-B7D6DC` (Sneha Kulkarni).
+
+### Demo scenarios
+
+| Scenario | Endpoint | Demonstrates |
+|----------|----------|--------------|
+| Full rescue | `POST /demo/full-scenario` | report → accept → pickup → hospital reject → reroute → handover → rating |
+| Crash detection | `POST /demo/crash-scenario` | POTENTIAL_CRASH → countdown confirmation |
+| **Adaptive dispatch** | `POST /demo/adaptive-dispatch` | QR identify → AI triage → traffic ETA jump → AI re-evaluation → control-room approval → reassign → completed |
+| **QR failure** | `POST /demo/unknown-qr` | `patient:verification-failed` with no emergency created |
+| **Ambulance shortage** | `POST /demo/ambulance-shortage` | every unit declines → `NO_AMBULANCE_AVAILABLE` → escalation |
+
+---
+
 ## Tech Stack
 
-### Frontend (`frontend/` — React 19, Create-React-App)
-- **React + React Router v7** — SPA with role-locked routes.
+### Frontend (`frontend/` — React 18.2, Create-React-App)
+- **React 18 + React Router 6.20** — SPA with role-locked routes.
 - **Leaflet + OpenStreetMap** — animated route map (`RouteMap`), live-GPS marker.
 - **Socket.IO client** — real-time emergency updates, siren, ambulance movement (`services/socket.js`).
 - **React context auth** — role-based demo accounts persisted in `localStorage`.
+- **html5-qrcode** — on-device camera / upload decoding of patient-reference QRs (private by design).
 - CSS custom properties + per-screen stylesheets; sound via `Web Audio`/`soundManager.js`.
 
 ### Backend (`backend/` — Node.js / Express 5)
 - **Express** + **CORS** + **Socket.IO** real-time layer (`sockets/rescueSocket.js`).
 - **In-memory emergency engine** — the source of truth; no DB required.
+- **AI advisory layer** (`domain/ai/`) — Gemini structured outputs with schema validation and
+  a deterministic fallback; append-only decision log (`aiDecisionLog`).
 - **MongoDB via Mongoose** *(optional)* — schemas exist (`models/`) for persistence if a
   `MONGO_URI` is provided, but the app starts and runs fully without it.
 - `dotenv` config, centralized scoring/timing config.
@@ -267,11 +335,14 @@ Base URL: `http://<host>:5001`
 ### Unified v1 API (`/api/v1`)
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/emergencies` | Create a report (self / bystander / crash). |
+| POST | `/emergencies` | Create a report (self / bystander / crash). Triggers the advisory AI pipeline. |
 | GET | `/emergencies` | List emergencies (`?activeOnly`, `?status`). |
 | GET | `/emergencies/admission-requests?hospitalId=` | Cases with a WAITING admission request for that hospital. |
 | GET | `/emergencies/:id` | Single emergency detail. |
 | POST | `/emergencies/:id/actions` | Apply a role-gated action (see state table). Body: `{ role, action, ambulanceId?, hospitalId?, ... }`. |
+| POST | `/emergencies/:id/patient` | Attach a resolved patient reference. Body: `{ patientId, identificationMethod, verified?, details? }`. |
+| GET | `/emergencies/:id/ai` | AI decision trail (`aiDecisionLog`) for the emergency. |
+| POST | `/emergencies/:id/reevaluate` | Run an advisory AI re-evaluation (plan-degradation check). |
 | POST | `/emergencies/:id/siren` | Toggle the ambulance siren. |
 | GET | `/emergencies/:id/recommendations` | Explainable hospital recommendations. |
 | POST | `/emergencies/:id/resources` | Hospital updates its resource freshness. |
@@ -282,9 +353,18 @@ Base URL: `http://<host>:5001`
 | GET | `/metrics` | Live metrics. |
 | GET | `/scoring-config` | Exposed weights/thresholds for transparency. |
 | GET | `/green-corridor/:emergencyId` | Corridor state for an emergency. |
-| POST | `/demo/reset` | Reset in-memory state. |
+| POST | `/demo/reset` | Reset in-memory state (also clears AI plan trackers). |
 | POST | `/demo/full-scenario` | Deterministic end-to-end demo. |
 | POST | `/demo/crash-scenario` | Crash-detection demo. |
+| POST | `/demo/adaptive-dispatch` | AI adaptive-dispatch demo (traffic → re-plan → reassign). |
+| POST | `/demo/unknown-qr` | QR identification-failure demo. |
+| POST | `/demo/ambulance-shortage` | All-units-decline → escalation demo. |
+
+The patient lookup endpoints live under `/api/patient` (singular base, matching the frontend):
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/patient/lookup/:patientId` | Resolve a patient-reference QR token (`PT-…`) to an emergency-safe profile. |
 
 Other mount points: `/api/ambulance`, `/api/hospital`, `/api/traffic`, `/api/vehicles`,
 `/api/family-emergency`, `/api/auth`.
@@ -326,6 +406,7 @@ npm start
 |----------|---------|
 | `PORT` | Backend port (default `5001`). |
 | `MONGO_URI` | *(optional)* MongoDB connection string. If absent, the in-memory engine runs. |
+| `GEMINI_API_KEY` | *(optional)* Google AI key. When set, the orchestrator uses Gemini for triage/recommendation/re-evaluation (`GENERATED` entries); when absent it uses the audited deterministic fallback (`FALLBACK` entries). |
 
 ---
 
@@ -353,7 +434,8 @@ Demo accounts** dropdown, and can also be created new via **Create account**.
 # Backend unit tests (33 tests, Node's built-in test runner)
 cd backend
 npm test
-# or: node --test "backend/test/emergencyEngine.test.js"
+# or, if `npm test` hits a MODULE_NOT_FOUND dir-glob quirk, run files directly:
+node --test test/emergencyEngine.test.js
 
 # Frontend production build (ESLint treated as errors under CI)
 cd frontend
@@ -365,6 +447,10 @@ and escalation, crash detection, parallel admission requests + **first-accept-wi
 invalid "second hospital" FORBIDDEN path, the 60s cancellation window (in-window success,
 after-window lock + control-room override), `confirm-patient-received` freeing the ambulance,
 reusing a freed ambulance, and report-risk flagging.
+
+The AI re-evaluation/reassignment path is covered by a live smoke flow: `POST /demo/adaptive-dispatch`
+then `GET /emergencies/:id/ai` shows `ai:triage`, `ai:recommendation`, `ai:reevaluation`
+(REASSIGN, requires human approval) and the applied `ai:decision` entry.
 
 ---
 
@@ -403,3 +489,11 @@ Every dynamic figure is marked so users can tell **real** from **simulated**:
 - Animated navigation interpolates between waypoints; real GPS is opt-in and replaces the
   simulation when the driver allows it.
 - Single-process, single-instance assumption for the atomic first-accept-wins guarantee.
+- **AI is advisory, not autonomous** — no Gemini key means every entry is deterministic
+  `FALLBACK`; a re-evaluation recommendation always requires human approval, and the control
+  room executes (never the model).
+- **Reassignment is pre-pickup** — `reassign-ambulance` is only allowed while the case is
+  `AMBULANCE_OFFERED` / `AMBULANCE_ACCEPTED` (dispatch role), keeping the patient safe.
+- **QR refs are reference-only** — lookup never returns Aadhaar, phone or medical history;
+  a STOLEN QR only leaks a sparse emergency profile, and the OS/service telemetry emits
+  `patient:verification-failed` rather than creating a case.

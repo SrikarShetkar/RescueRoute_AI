@@ -13,7 +13,51 @@ function createEmergency(req, res) {
       return res.status(400).json({ error: "A valid location (lat/lng) is required" });
     }
     const emergency = engine.createEmergency({ kind, reporter, patient, location });
+    // Advisory AI pipeline (triage + ambulance recommendation). Fire-and-forget:
+    // it must never block or fail an emergency report. Gemini absence degrades
+    // to deterministic suggestions logged with a FALLBACK status.
+    setImmediate(() => {
+      require("../domain/ai/aiAdviser").runAdvisoryPipeline(emergency).catch(() => {});
+    });
     res.status(201).json({ success: true, emergency });
+  } catch (err) {
+    handleError(err, res);
+  }
+}
+
+/**
+ * POST /api/v1/emergencies/:id/patient
+ * Body: { patientId, identificationMethod, verified?, details? }
+ * Attaches a server-resolved patient reference (e.g. from a bystander QR scan)
+ * to an existing emergency. Only the non-sensitive reference is stored.
+ */
+function attachPatient(req, res) {
+  try {
+    const { patientId, identificationMethod, verified, details } = req.body || {};
+    if (!identificationMethod && !patientId) {
+      return res.status(400).json({ error: "patientId and/or identificationMethod are required" });
+    }
+    const emergency = engine.attachPatient(req.params.id, {
+      patientId,
+      identificationMethod,
+      verified,
+      details,
+    });
+    res.json({ success: true, emergency });
+  } catch (err) {
+    handleError(err, res);
+  }
+}
+
+/**
+ * GET /api/v1/emergencies/:id/ai
+ * Returns the AI decision trail (append-only audit log) for an emergency.
+ */
+function aiTrail(req, res) {
+  try {
+    const emergency = engine.getEmergency(req.params.id);
+    if (!emergency) return res.status(404).json({ error: "Emergency not found" });
+    res.json({ success: true, aiDecisionLog: emergency.aiDecisionLog || [] });
   } catch (err) {
     handleError(err, res);
   }
@@ -176,6 +220,11 @@ function statusOverview(req, res) {
  */
 function resetDemo(req, res) {
   engine.reset();
+  try {
+    require("../domain/ai/aiAdviser").resetAdvisers();
+  } catch (err) {
+    /* advisory only */
+  }
   res.json({ success: true, message: "Demo state reset. All systems standby." });
 }
 
@@ -262,6 +311,84 @@ function crashDemoScenario(req, res) {
   }
 }
 
+/**
+ * POST /api/v1/demo/adaptive-dispatch — the AI adaptive-dispatch demo.
+ * A critical crash report → patient-ref QR identification → AI triage /
+ * recommendation → traffic degrades the assigned unit's ETA → AI re-evaluation
+ * flags REASSIGN_AMBULANCE → control room approves → deterministic reassignment
+ * → rescue completed.
+ */
+function adaptiveDispatchDemoScenario(req, res) {
+  try {
+    const demo = require("../domain/demoMode");
+    const emergency = demo.runAdaptiveDispatchScenario();
+    res.json({
+      success: true,
+      emergency,
+      message: "Adaptive dispatch demo started. Watch traffic trigger an AI re-plan.",
+    });
+  } catch (err) {
+    handleError(err, res);
+  }
+}
+
+/**
+ * POST /api/v1/demo/unknown-qr — QR identification failure demo.
+ * A scanned token does not resolve; control room receives
+ * `patient:verification-failed` with no emergency created.
+ */
+function unknownQrDemoScenario(req, res) {
+  try {
+    const demo = require("../domain/demoMode");
+    const result = demo.runUnknownQrScenario();
+    res.json({ success: true, ...result, message: "QR identification failure simulated." });
+  } catch (err) {
+    handleError(err, res);
+  }
+}
+
+/**
+ * POST /api/v1/demo/ambulance-shortage — resource-failure demo.
+ * Every unit declines; the engine degrades to NO_AMBULANCE_AVAILABLE and
+ * escalates for manual coordination.
+ */
+function ambulanceShortageDemoScenario(req, res) {
+  try {
+    const demo = require("../domain/demoMode");
+    const emergency = demo.runAmbulanceShortageScenario();
+    res.json({
+      success: true,
+      emergency,
+      message: "Ambulance shortage scenario started. All units will decline.",
+    });
+  } catch (err) {
+    handleError(err, res);
+  }
+}
+
+/**
+ * POST /api/v1/emergencies/:id/reevaluate — run an advisory re-evaluation for
+ * an active emergency (plan degradation check). Fires ai:reevaluation +
+ * ai:decision so control room hears it live.
+ */
+async function reevaluateEmergency(req, res) {
+  try {
+    const adviser = require("../domain/ai/aiAdviser");
+    const emergency = engine.getEmergency(req.params.id);
+    if (!emergency) return res.status(404).json({ error: "Emergency not found" });
+    const cause = req.body?.cause || { requestedBy: "control-room" };
+    const result = await adviser.runReevaluation(emergency, engine.listAmbulances(), cause);
+    res.json({
+      success: true,
+      etaDelta: result.etaDelta,
+      decision: result.decision,
+      entry: result.logEntry,
+    });
+  } catch (err) {
+    handleError(err, res);
+  }
+}
+
 function handleError(err, res) {
   const status = { BAD_REQUEST: 400, NOT_FOUND: 404, FORBIDDEN: 403, INVALID_STATE: 409 }[err.code] || 500;
   console.error(` [api] ${err.message}`);
@@ -274,6 +401,8 @@ function handleError(err, res) {
 
 module.exports = {
   createEmergency,
+  attachPatient,
+  aiTrail,
   listEmergencies,
   listAdmissionRequests,
   getEmergency,
@@ -291,4 +420,8 @@ module.exports = {
   updateResources,
   fullDemoScenario,
   crashDemoScenario,
+  adaptiveDispatchDemoScenario,
+  unknownQrDemoScenario,
+  ambulanceShortageDemoScenario,
+  reevaluateEmergency,
 };

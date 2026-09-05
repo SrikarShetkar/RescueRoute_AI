@@ -115,3 +115,45 @@
   font-weight: 600;
   letter-spacing: 0.05em;
 }
+
+.pi-demo-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pi-demo-label {
+  font-size: 12px;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.pi-demo-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pi-demo-chip {
+  border: 1px solid #2f2f2f;
+  background: #121212;
+  color: var(--light);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.pi-demo-chip:hover:not(:disabled) {
+  border-color: #0b6fd1;
+  background: #0d1620;
+}
+
+.pi-demo-chip:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}

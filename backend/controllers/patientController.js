@@ -64,6 +64,36 @@ function lookupByAadhaar(req, res) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Patient-reference lookup (RESCUEROUTE:PATIENT:<publicId>)           */
+/* ------------------------------------------------------------------ */
+
+function lookupByPatientId(req, res) {
+  try {
+    const { patientId } = req.params;
+    if (!patientId) {
+      return res.status(400).json({ success: false, code: "PATIENT_REFERENCE_REQUIRED", message: "A patient reference is required." });
+    }
+
+    const normalized = registry.normalizePatientReference(patientId);
+    if (!normalized) {
+      return res.status(400).json({ success: false, code: "INVALID_PATIENT_REFERENCE", message: "Patient reference format is invalid." });
+    }
+
+    const patient = registry.lookupByPatientReference(patientId);
+    if (!patient) {
+      return res.status(404).json({
+        success: false,
+        code: "PATIENT_NOT_FOUND",
+        message: "Patient record could not be found.",
+      });
+    }
+    res.json({ success: true, patient });
+  } catch (err) {
+    handleError(err, res);
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Emergency profile                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -206,6 +236,7 @@ module.exports = {
   lookupByQr,
   lookupByVehicle,
   lookupByAadhaar,
+  lookupByPatientId,
   getEmergencyProfile,
   createVehicle,
   associateUser,

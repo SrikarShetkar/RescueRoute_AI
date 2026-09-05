@@ -135,6 +135,29 @@ export function runCrashScenario() {
   return request("/demo/crash-scenario", { method: "POST" });
 }
 
+/** AI adaptive-dispatch demo: traffic triggers an AI re-plan + reassignment. */
+export function runAdaptiveDispatchScenario() {
+  return request("/demo/adaptive-dispatch", { method: "POST" });
+}
+
+/** QR-use-failure demo: a scanned token does not resolve to a patient. */
+export function runUnknownQrScenario() {
+  return request("/demo/unknown-qr", { method: "POST" });
+}
+
+/** Resource-failure demo: every ambulance declines, control room escalates. */
+export function runAmbulanceShortageScenario() {
+  return request("/demo/ambulance-shortage", { method: "POST" });
+}
+
+/** Trigger an advisory AI re-evaluation for an emergency (plan degradation check). */
+export function reevaluateEmergency(id, cause = {}) {
+  return request(`/emergencies/${encodeURIComponent(id)}/reevaluate`, {
+    method: "POST",
+    body: JSON.stringify({ cause }),
+  });
+}
+
 // Normalise an emergency response ({emergency} or raw) -> emergency object.
 export function toEmergency(payload) {
   return payload?.emergency || payload;
@@ -158,6 +181,10 @@ const api = {
   updateResources,
   runFullScenario,
   runCrashScenario,
+  runAdaptiveDispatchScenario,
+  runUnknownQrScenario,
+  runAmbulanceShortageScenario,
+  reevaluateEmergency,
   toEmergency,
 };
 

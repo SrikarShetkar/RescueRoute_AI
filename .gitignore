@@ -86,3 +86,5 @@ public
 # Temporary folders
 tmp/
 temp/
+# CRA build output (frontend)
+frontend/build/

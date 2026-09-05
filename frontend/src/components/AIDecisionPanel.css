@@ -1,0 +1,108 @@
+.aid-panel {
+  margin-top: 16px;
+  border: 1px solid #2a2a2a;
+  border-radius: 8px;
+  background: #0e141b;
+  overflow: hidden;
+}
+
+.aid-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #101a24;
+  border-bottom: 1px solid #22303f;
+}
+
+.aid-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #7fd0ff;
+}
+
+.aid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.aid-entry {
+  border-left: 3px solid #0b6fd1;
+  background: #111a24;
+  border-radius: 0 6px 6px 0;
+  padding: 10px 12px;
+}
+
+.aid-entry.fallback {
+  border-left-color: #8a6d3b;
+}
+
+.aid-entry-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aid-event {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--light);
+}
+
+.aid-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.aid-badge.gen {
+  background: rgba(46, 204, 113, 0.15);
+  color: #4cd787;
+}
+
+.aid-badge.fallback {
+  background: rgba(230, 170, 60, 0.14);
+  color: #e6aa3c;
+}
+
+.aid-conf {
+  font-size: 11px;
+  color: #9db7cc;
+}
+
+.aid-reason {
+  margin: 8px 0 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: #cdd9e4;
+}
+
+.aid-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.aid-hum {
+  color: #ffb258;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+  border: 1px solid rgba(255, 178, 88, 0.4);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+
+.aid-cue {
+  color: #ff8b8b;
+  font-size: 10px;
+}

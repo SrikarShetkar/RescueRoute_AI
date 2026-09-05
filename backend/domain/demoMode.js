@@ -14,6 +14,9 @@
  */
 
 const engine = require("./emergencyEngine");
+const bus = require("./bus");
+const aiAdviser = require("./ai/aiAdviser");
+const patientRegistry = require("./patientRegistry");
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -143,6 +146,196 @@ function runCrashScenario() {
   return em;
 }
 
+/* ------------------------------------------------------------------ */
+/* Adaptive dispatch — "Critical Crash — Adaptive Dispatch"             */
+/*                                                                      */
+/* A critical crash is reported, the victim is identified via a         */
+/* patient-reference QR, and the AI advisory pipeline scores the        */
+/* triage + ambulance plan. Heavy traffic makes the assigned (far)      */
+/* unit's ETA jump; the AI re-evaluation detects the degradation and    */
+/* recommends REASSIGN_AMBULANCE (requires human approval). The         */
+/* control-room operator approves, and the deterministic engine          */
+/* reassigns the closest available unit and completes the rescue.       */
+/* ------------------------------------------------------------------ */
+
+function runAdaptiveDispatchScenario() {
+  // Resolve the victim from a real patient-reference QR (deterministic id).
+  const victim = patientRegistry.lookupByPatientReference("PT-B7D6D7") || {};
+  const em = engine.createEmergency({
+    kind: "ACCIDENT_REPORT",
+    reporter: { name: "Demo Bystander", via: "bystander" },
+    patient: {
+      name: victim.name || "Demo Patient",
+      age: victim.age || 52,
+      bloodGroup: victim.bloodGroup || "B+",
+      allergies: victim.allergies || "None",
+      severity: "critical",
+      condition: "Crash injury, suspected internal bleeding",
+    },
+    location: demoLocation(),
+  });
+  demoEmergencyId = em.emergencyId;
+  const ambulanceId = em.ambulance ? em.ambulance.id : em.ambulanceId;
+  fireAndForget(runAdaptiveDispatchSequence(demoEmergencyId, ambulanceId));
+  return em;
+}
+
+async function runAdaptiveDispatchSequence(emergencyId, ambulanceId) {
+  try {
+    // Advisory pipeline (triage + recommendation) — asynchronous, non-blocking.
+    const snapshotAtCreate = engine.getEmergency(emergencyId);
+    fireAndForget(aiAdviser.runAdvisoryPipeline(snapshotAtCreate));
+
+    await delay(1500);
+    engine.attachPatient(emergencyId, {
+      patientId: "PT-B7D6D7",
+      identificationMethod: "QR",
+      verified: true,
+      details: { source: "qr-scan", device: "demo-bystander" },
+    });
+
+    await delay(6000);
+    engine.applyAction(emergencyId, "accept", { role: engine.ROLES.AMBULANCE, ambulanceId });
+    // Baseline the plan AFTER acceptance so the traffic ETA jump is measured
+    // against a healthy plan.
+    aiAdviser.baselinePlan(engine.getEmergency(emergencyId));
+
+    await delay(2500);
+    // Heavy traffic / roadblock: the assigned unit is stuck and its ETA
+    // degrades as it detours back away from the patient.
+    engine.moveAmbulance({ ambulanceId, lat: 17.352, lng: 78.511 });
+    console.log("[demoMode] adaptive-dispatch: simulation of heavy traffic congestion");
+
+    await delay(900);
+    await aiAdviser.runReevaluation(engine.getEmergency(emergencyId), engine.listAmbulances(), {
+      scenario: "traffic",
+      description: "Roadblock on the primary route — unit ETA degraded by congestion.",
+    });
+
+    await delay(2500);
+    // Control-room operator (dispatch role) approves the AI re-plan.
+    engine.applyAction(emergencyId, "reassign-ambulance", {
+      role: engine.ROLES.DISPATCH,
+      actor: "Control Room",
+    });
+    const afterReassign = engine.getEmergency(emergencyId);
+    const newAmbulanceId = afterReassign.ambulanceId;
+    // Complete the audit trail: the approved recommendation was applied.
+    engine.logAiDecision(emergencyId, {
+      event: "ai:decision",
+      decision: {
+        planOptimal: false,
+        recommendedAction: "REASSIGN_AMBULANCE",
+        recommendedAmbulanceId: newAmbulanceId,
+        reasoningSummary: [`Control room approved adaptive re-plan → ${newAmbulanceId}.`],
+        requiresHumanApproval: false,
+      },
+      reason: `Approved re-plan applied — reassigned to ${newAmbulanceId}`,
+      confidence: 0.9,
+      status: "GENERATED",
+      requiresHumanApproval: false,
+      cause: { scenario: "traffic" },
+      approval: { approvedBy: "control-room-demo", appliedAction: "reassign-ambulance" },
+    });
+
+    await delay(3000);
+    engine.applyAction(emergencyId, "accept", { role: engine.ROLES.AMBULANCE, ambulanceId: newAmbulanceId });
+    await moveAmbulanceAlong(emergencyId, newAmbulanceId, afterReassign.ambulance.liveLocation, afterReassign.location, STEPS.PATIENT);
+
+    await delay(1200);
+    engine.applyAction(emergencyId, "at-patient", { role: engine.ROLES.AMBULANCE, ambulanceId: newAmbulanceId });
+    await delay(1200);
+    engine.applyAction(emergencyId, "pickup", { role: engine.ROLES.AMBULANCE, ambulanceId: newAmbulanceId });
+
+    await delay(1200);
+    const snap = engine.getEmergency(emergencyId);
+    engine.applyAction(emergencyId, "accept-patient", { role: engine.ROLES.HOSPITAL, hospitalId: snap.hospitalId });
+    engine.applyAction(emergencyId, "navigate", { role: engine.ROLES.AMBULANCE, ambulanceId: newAmbulanceId, hospitalId: snap.hospitalId });
+    await moveAmbulanceAlong(emergencyId, newAmbulanceId, snap.ambulance.liveLocation, snap.hospital.liveLocation, STEPS.HOSPITAL);
+
+    await delay(800);
+    engine.applyAction(emergencyId, "arrived-hospital", { role: engine.ROLES.AMBULANCE, ambulanceId: newAmbulanceId });
+    await delay(1200);
+    engine.applyAction(emergencyId, "handover", { role: engine.ROLES.AMBULANCE, ambulanceId: newAmbulanceId });
+    await delay(1500);
+    engine.applyAction(emergencyId, "discharge", { role: engine.ROLES.HOSPITAL, hospitalId: engine.getEmergency(emergencyId).hospitalId });
+    engine.applyAction(emergencyId, "rate-hospital", {
+      role: engine.ROLES.REPORTER,
+      rating: 5,
+      ratingComment: "Adaptive dispatch re-plan kept things fast",
+      ratingCategories: { care: 5, response: 5, facilities: 4 },
+    });
+  } catch (err) {
+    console.error("[demoMode] adaptive-dispatch error:", err.message);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Failure demos                                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * runUnknownQrScenario() — QR identification failure path. A scanned token
+ * does not resolve to a patient record; the control room is notified via
+ * `patient:verification-failed` without creating an emergency.
+ */
+function runUnknownQrScenario() {
+  const token = "RESCUEROUTE:PATIENT:PT-UNKNOWN";
+  const ref = patientRegistry.normalizePatientReference(token) || "INVALID_REFERENCE";
+  const match = patientRegistry.lookupByPatientReference(ref);
+  const reason = match ? "NO_MATCH" : ref === "INVALID_REFERENCE" ? "INVALID_REFERENCE" : "UNKNOWN_PATIENT_REFERENCE";
+  bus.emit("patient:verification-failed", {
+    token,
+    ref,
+    reason,
+    message: reason === "INVALID_REFERENCE"
+      ? "QR token did not match a valid patient reference."
+      : "QR token did not resolve to a patient record.",
+    at: new Date().toISOString(),
+  });
+  return { success: true, token, ref, reason };
+}
+
+/**
+ * runAmbulanceShortageScenario() — resource-failure path. Every available
+ * unit declines the case; the engine escalates to NO_AMBULANCE_AVAILABLE and
+ * the control room is escalated for manual coordination. Demonstrates the
+ * deterministic engine's resilience when the AI layer has nothing to plan.
+ */
+function runAmbulanceShortageScenario() {
+  const em = engine.createEmergency({
+    kind: "ACCIDENT_REPORT",
+    reporter: { name: "Demo Citizen", via: "crash" },
+    patient: demoPatient("critical", "Chest pain, possible cardiac event"),
+    location: demoLocation(),
+  });
+  demoEmergencyId = em.emergencyId;
+  fireAndForget(runShortageSequence(demoEmergencyId));
+  return em;
+}
+
+async function runShortageSequence(emergencyId) {
+  try {
+    let snap = engine.getEmergency(emergencyId);
+    // Every unit declines in sequence — the engine re-plans each time and
+    // eventually reports no available unit.
+    let guard = 0;
+    while (snap.status === engine.STATUS.AMBULANCE_OFFERED && snap.ambulanceId && guard < 10) {
+      await delay(1200);
+      engine.applyAction(emergencyId, "reject", { role: engine.ROLES.AMBULANCE, ambulanceId: snap.ambulanceId });
+      snap = engine.getEmergency(emergencyId);
+      guard += 1;
+    }
+    // Escalation for manual coordination once the fleet is exhausted.
+    if (snap.status === engine.STATUS.NO_AMBULANCE_AVAILABLE) {
+      await delay(1200);
+      engine.applyAction(emergencyId, "escalate", { role: engine.ROLES.DISPATCH, actor: "Control Room" });
+    }
+  } catch (err) {
+    console.error("[demoMode] ambulance-shortage error:", err.message);
+  }
+}
+
 function fireAndForget(promise) {
   promise.catch((err) => console.error("[demoMode]", err));
 }
@@ -150,6 +343,9 @@ function fireAndForget(promise) {
 module.exports = {
   runFullScenario,
   runCrashScenario,
+  runAdaptiveDispatchScenario,
+  runUnknownQrScenario,
+  runAmbulanceShortageScenario,
   getDemoEmergencyId: () => demoEmergencyId,
   demoPatient,
   demoLocation,

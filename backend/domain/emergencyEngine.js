@@ -89,6 +89,12 @@ const TRANSITIONS = {
     label: "Ambulance declined the case",
     reassignAmbulance: true,
   },
+  "reassign-ambulance": {
+    from: [STATUS.AMBULANCE_OFFERED, STATUS.AMBULANCE_ACCEPTED],
+    roles: [ROLES.DISPATCH],
+    label: "Control room reassigned a closer ambulance",
+    reassignAmbulance: true,
+  },
   "at-patient": {
     from: [STATUS.AMBULANCE_ACCEPTED],
     roles: [ROLES.AMBULANCE],
@@ -856,7 +862,15 @@ function createEmergency({ kind, reporter, patient, location, confidence }) {
       allergies: patient?.allergies || "None listed",
       condition: patient?.condition || "Emergency reported",
       severity: patient?.severity || "moderate",
+      // Patient identification (bystander mode). The QR/scan only carries a
+      // non-sensitive patient REFERENCE. Verification is resolved server-side.
+      identificationMethod: patient?.identificationMethod || "UNKNOWN",
+      patientId: patient?.patientId ?? null,
+      verified: patient?.verified === true,
+      verifiedAt: patient?.verified === true ? new Date().toISOString() : null,
     },
+    aiDecisionLog: [],
+    patientIdentifiedAt: null,
     location: { lat: location.lat, lng: location.lng, label: location.label || "Location confirmed" },
     status: isCrash ? STATUS.POTENTIAL_CRASH : STATUS.REPORTED,
     createdAt: now.toISOString(),
@@ -1048,6 +1062,12 @@ function applyAction(emergencyId, action, opts = {}) {
       em.status = STATUS.NO_AMBULANCE_AVAILABLE;
       em.updatedAt = new Date().toISOString();
     }
+    bus.emit("dispatch:reassigned", {
+      emergencyId: em.emergencyId,
+      ambulanceId: em.ambulanceId,
+      actor: opts.actor || opts.role,
+      emergency: snapshot(em),
+    });
   }
 
   if (rule.assignHospital) {
@@ -1777,11 +1797,89 @@ function snapshot(em) {
     })),
     greenCorridor: em.greenCorridor ? { ...em.greenCorridor } : null,
     recommendation: em.recommendation ? { ...em.recommendation, hospital: em.recommendation.hospital ? { ...em.recommendation.hospital } : null } : null,
+    aiDecisionLog: [...(em.aiDecisionLog || [])],
   };
 }
 
 function publish(em) {
   bus.emit("emergency:updated", snapshot(em));
+}
+
+/* ------------------------------------------------------------------ */
+/* Patient identification (bystander mode)                              */
+/* ------------------------------------------------------------------ */
+
+const IDENTIFICATION_METHODS = ["QR", "MANUAL", "VEHICLE", "AADHAAR_REFERENCE", "UNKNOWN"];
+
+/**
+ * attachPatient(emergencyId, { patientId, identificationMethod, details }) —
+ * Links a server-resolved patient reference to an emergency after bystander
+ * verification. Only the non-sensitive patient reference + verified choice is
+ * stored; sensitive medical profiles are NEVER embedded here.
+ */
+function attachPatient(emergencyId, opts = {}) {
+  const em = state.emergencies.get(emergencyId);
+  if (!em) throw Object.assign(new Error(`Emergency ${emergencyId} not found`), { code: "NOT_FOUND" });
+
+  const method = IDENTIFICATION_METHODS.includes(opts.identificationMethod) ? opts.identificationMethod : "UNKNOWN";
+  if (!opts.patientId && method !== "UNKNOWN") {
+    throw Object.assign(new Error("A patientId is required when identificationMethod is not UNKNOWN"), { code: "BAD_REQUEST" });
+  }
+
+  em.patient.patientId = opts.patientId ?? null;
+  em.patient.identificationMethod = method;
+  em.patient.verified = opts.verified !== false;
+  em.patient.verifiedAt = new Date().toISOString();
+  if (opts.details) {
+    em.patient.identificationDetails = opts.details;
+  }
+  em.patientIdentifiedAt = new Date().toISOString();
+
+  pushTimeline(em, ROLES.REPORTER, "patient-identified",
+    `Patient identified via ${method}${opts.patientId ? ` (${opts.patientId})` : ""}`, { category: "identify" }, { allowDuplicate: true });
+
+  bus.emit("patient:identified", {
+    emergencyId: em.emergencyId,
+    patient: safePatientView(em.patient),
+    emergency: snapshot(em),
+    at: em.patientIdentifiedAt,
+  });
+  publish(em);
+  return snapshot(em);
+}
+
+/** Compact patient view — only what response teams genuinely need. */
+function safePatientView(patient) {
+  return {
+    name: patient?.name || "Unknown",
+    age: patient?.age ?? null,
+    bloodGroup: patient?.bloodGroup || "Unknown",
+    allergies: patient?.allergies || "None listed",
+    condition: patient?.condition || "Emergency reported",
+    severity: patient?.severity || "moderate",
+    patientId: patient?.patientId ?? null,
+    identificationMethod: patient?.identificationMethod || "UNKNOWN",
+    verified: patient?.verified === true,
+  };
+}
+
+/**
+ * logAiDecision(emergencyId, entry) — append an AI decision to the emergency's
+ * audit trail (append-only). The orchestrator writes here via the engine.
+ */
+function logAiDecision(emergencyId, entry) {
+  const em = state.emergencies.get(emergencyId);
+  if (!em) throw Object.assign(new Error(`Emergency ${emergencyId} not found`), { code: "NOT_FOUND" });
+  if (!em.aiDecisionLog) em.aiDecisionLog = [];
+  em.aiDecisionLog.push({ ...entry, at: entry.at || new Date().toISOString() });
+  em.updatedAt = new Date().toISOString();
+  const stored = em.aiDecisionLog[em.aiDecisionLog.length - 1];
+  const ev = entry.event || "ai:decision";
+  const payload = { emergencyId: em.emergencyId, entry: stored, emergency: snapshot(em) };
+  bus.emit(ev, payload);
+  bus.emit("ai:decision", payload);
+  publish(em);
+  return stored;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1905,4 +2003,8 @@ module.exports = {
   corridorForEmergency,
   reset,
   SEVERITY_ORDER,
+  attachPatient,
+  safePatientView,
+  logAiDecision,
+  IDENTIFICATION_METHODS,
 };

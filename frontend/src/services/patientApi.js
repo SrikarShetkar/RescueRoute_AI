@@ -31,6 +31,11 @@ export function lookupByAadhaar(identifier) {
   return request(`/aadhaar/${encodeURIComponent(identifier)}`);
 }
 
+/** Resolve a patient reference (RESCUEROUTE:PATIENT:<publicId>) to an emergency-relevant subset. */
+export function lookupByPatientId(patientId) {
+  return request(`/lookup/${encodeURIComponent(patientId)}`);
+}
+
 export function getEmergencyProfile(userId) {
   return request(`/emergency-profile/${encodeURIComponent(userId)}`);
 }
@@ -81,6 +86,7 @@ const patientApi = {
   lookupByQr,
   lookupByVehicle,
   lookupByAadhaar,
+  lookupByPatientId,
   getEmergencyProfile,
   getProfile,
   updateProfile,

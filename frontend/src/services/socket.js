@@ -24,6 +24,14 @@ export const EVENTS = {
   HOSPITAL_RESOURCES: "hospital:resources",
   HOSPITAL_ACCEPTED: "hospital:accepted",
   DRIVER_STARTED: "hospital:driver-started",
+  // AI decision-support + bystander patient identification
+  PATIENT_IDENTIFIED: "patient:identified",
+  PATIENT_VERIFICATION_FAILED: "patient:verification-failed",
+  AI_TRIAGE: "ai:triage",
+  AI_RECOMMENDATION: "ai:recommendation",
+  AI_REEVALUATION: "ai:reevaluation",
+  AI_DECISION: "ai:decision",
+  DISPATCH_REASSIGNED: "dispatch:reassigned",
 };
 
 let socket = null;

@@ -93,6 +93,7 @@
 .cr-metric span { font-size: 13px; }
 
 .cr-false-alarm { align-self: flex-start; }
+.cr-reeval { align-self: flex-start; margin-right: 10px; }
 /* ---- Control-room overrides + escalation + corridor detail ---- */
 .cr-stat.corridor.escalation { border-color: #ff4a3d; box-shadow: 0 0 22px rgba(255, 74, 61, 0.18); }
 .cr-stat.corridor.escalation h3 { color: #ff6a5e; }
@@ -200,4 +201,18 @@
   margin-top: 12px; display: flex; align-items: center; gap: 8px;
   color: #ffb800; font-size: 13px; background: #1c1406;
   border: 1px solid #5c4a1f; border-radius: 6px; padding: 8px 12px;
+}
+
+.cr-identified {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  color: #4cd787;
+  background: #0c1a12;
+  border: 1px solid #1f4d33;
+  border-radius: 6px;
+  padding: 8px 12px;
 }

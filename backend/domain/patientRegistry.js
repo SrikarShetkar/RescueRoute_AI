@@ -6,6 +6,11 @@
  *
  * All sensitive data (Aadhaar, medical history) is NEVER stored in QR codes.
  * QR codes contain only a secure random token.
+ *
+ * Bystander patient-reference QR codes carry ONLY a non-sensitive public
+ * reference (e.g. `RESCUEROUTE:PATIENT:PT-8F29A1`). The server resolves that
+ * reference to the underlying record and returns only emergency-relevant
+ * fields — never Aadhaar or full medical history.
  */
 
 const crypto = require("crypto");
@@ -17,7 +22,60 @@ const crypto = require("crypto");
 const vehicles = new Map();   // vehicleId -> vehicle object
 const users = new Map();      // userId -> user/patient object
 const qrTokenMap = new Map(); // qrToken -> vehicleId
+const patientRefMap = new Map(); // public patient ref (PT-XXXXXX) -> userId
 let vehicleSerial = 1;
+
+const PATIENT_REF_PREFIX = "RESCUEROUTE:PATIENT:";
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+function generateQrToken() {
+  return "rr-qr-" + crypto.randomBytes(18).toString("hex");
+}
+
+function normalizeVehicleNumber(num) {
+  return String(num || "").toUpperCase().replace(/\s+/g, "").replace(/-/g, "");
+}
+
+function maskAadhaar(aadhaar) {
+  if (!aadhaar) return "";
+  const clean = String(aadhaar).replace(/\s/g, "");
+  if (clean.length === 12) {
+    return "XXXX XXXX " + clean.slice(-4);
+  }
+  return "XXXX";
+}
+
+/**
+ * Public patient reference. Deterministic, non-sensitive, collision-safe for
+ * demo seeds; maps 1:1 to a registry user id.
+ */
+function publicRefFor(userId) {
+  let h = 0;
+  for (let i = 0; i < String(userId).length; i++) h = (h * 31 + String(userId).charCodeAt(i)) >>> 0;
+  const suffix = (h % 0xffffff).toString(16).toUpperCase().padStart(6, "0");
+  return `PT-${suffix}`;
+}
+
+/**
+ * Accept either the full QR payload (`RESCUEROUTE:PATIENT:PT-XXXXXX`) or the
+ * bare reference (`PT-XXXXXX`). Returns null for clearly invalid references.
+ */
+function normalizePatientReference(ref) {
+  if (!ref) return null;
+  let clean = String(ref).trim();
+  const idx = clean.toUpperCase().indexOf(PATIENT_REF_PREFIX);
+  if (idx !== -1) {
+    clean = clean.slice(idx + PATIENT_REF_PREFIX.length);
+  }
+  clean = clean.trim();
+  if (!/^[A-Za-z]{2}:\d+$/.test(clean) && !/^[A-Za-z]{2,}-\d+$/.test(clean) && !/^PT-[A-Fa-f0-9]{6}$/i.test(clean)) {
+    return null;
+  }
+  return clean.toUpperCase();
+}
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -166,7 +224,11 @@ function seedDemoData() {
     },
   ];
 
-  demoUsers.forEach((u) => users.set(u.id, u));
+  demoUsers.forEach((u) => {
+    u.publicId = publicRefFor(u.id);
+    users.set(u.id, u);
+    patientRefMap.set(u.publicId, u.id);
+  });
 
   // --- Demo Vehicles ---
   const demoVehicles = [
@@ -336,8 +398,10 @@ function updateUser(userId, updates) {
 
 function createUser(userData) {
   const id = "pat-" + String(users.size + 100).padStart(3, "0");
+  const publicId = publicRefFor(id);
   const user = {
     id,
+    publicId,
     name: userData.name || "",
     age: userData.age || null,
     gender: userData.gender || "",
@@ -351,6 +415,7 @@ function createUser(userData) {
     emergencyContacts: userData.emergencyContacts || [],
   };
   users.set(id, user);
+  patientRefMap.set(publicId, id);
   return user;
 }
 
@@ -447,6 +512,36 @@ function lookupByAadhaar(aadhaar) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Patient-reference QR lookup (RESCUEROUTE:PATIENT:<publicId>)        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Resolve a patient reference to a SAFE emergency-relevant subset. Never
+ * returns Aadhaar, phone, or full medical history — only what a responding
+ * team genuinely needs to treat the patient.
+ */
+function lookupByPatientReference(ref) {
+  const clean = normalizePatientReference(ref);
+  if (!clean) return null;
+  const userId = patientRefMap.get(clean);
+  if (!userId) return null;
+  const user = users.get(userId);
+  if (!user) return null;
+
+  return {
+    id: user.id,
+    patientId: user.publicId,
+    name: user.name,
+    age: user.age,
+    gender: user.gender,
+    bloodGroup: user.bloodGroup,
+    allergies: user.allergies,
+    criticalConditions: user.medicalHistory || [],
+    emergencyContactAvailable: Array.isArray(user.emergencyContacts) && user.emergencyContacts.length > 0,
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* List all vehicles for a user                                        */
 /* ------------------------------------------------------------------ */
 
@@ -497,6 +592,8 @@ module.exports = {
   lookupByQrToken,
   lookupByVehicleNumber,
   lookupByAadhaar,
+  lookupByPatientReference,
+  normalizePatientReference,
   listVehiclesForUser,
   maskAadhaar,
   normalizeVehicleNumber,
